@@ -65,7 +65,11 @@ def start_auto_pg_detect(pdf_file, original_pdf_file, original_page_number):
 def start_mass_testing(test_directory):
     import glob
     logging.info(f"Testing on all pdf files in {test_directory}")
-    directory_size = len(glob.glob(f"{test_directory}/*.pdf"))
+    try:
+        directory_size = len(glob.glob(f"{test_directory}/*.pdf"))
+    except:
+        test_directory = "./test_suite/"
+        directory_size = len(glob.glob(f"{test_directory}/*.pdf"))
     PDFNet.Initialize(LICENSE_KEY)
     tot_right = 0
     incorrect_guesses = []
