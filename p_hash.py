@@ -53,8 +53,51 @@ def hash_hex_to_hash_array(hash_hex):
   array_str = bin(hash_str)[2:]
   return np.array([i for i in array_str], dtype = np.float32)
 
-def get_hash(name):
+def rank_images(diff):
+    value1, value2, value3, _ = diff
+    w1, w2, w3 = 0.4, 0.4, 0.2
+    return w1 * value1 + w2 * value2 + w3 * value3
+
+def split_up_hash(name, given_hash):
     img = cv2.imread(name)
+    if img is None:
+        print(f"Error reading {name}")
+        import pdb; pdb.set_trace()
+    height, width, _ = img.shape
+    segment_height = height // 2
+    segment_width = width // 2
+
+    top_left = img[:segment_height, :segment_width]  # Top-left
+    top_right = img[:segment_height, segment_width:]  # Top-right
+    bottom_left = img[segment_height:, :segment_width]  # Bottom-left
+    bottom_right = img[segment_height:, segment_width:]  # Bottom-right
+
+    # Extract the middle section of the same size as one segment
+    middle = img[segment_height//2 : segment_height//2 + segment_height,
+                segment_width//2 : segment_width//2 + segment_width]
+
+    segments = [get_hash(top_left, True), get_hash(top_right, True), get_hash(bottom_left, True),
+                get_hash(bottom_right, True), get_hash(middle, True), get_hash(img, True)]
+
+    diffs = []
+    for segment in segments:
+        segment_array = hash_hex_to_hash_array(segment)
+        if segment_array.shape[0] != given_hash.shape[0]:
+            min_diff = 1
+            print(f"Bad shape: {segment_array.shape[0]} vs {given_hash.shape[0]}, {name}")
+            continue
+        diff = hamming(
+            segment_array,
+            given_hash
+        )
+        diffs.append(diff)
+    return diffs
+
+def get_hash(name, is_split=False):
+    if not is_split:
+        img = cv2.imread(name)
+    else:
+        img = name
     # resize image and convert to gray scale
     img = cv2.resize(img, (64, 64))
     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -63,8 +106,8 @@ def get_hash(name):
     dct = cv2.dct(img)
     # to reduce hash length take only 8*8 top-left block
     # as this block has more information than the rest
-    # dct_block = dct[: 8, : 8]
-    dct_block = dct
+    dct_block = dct[: 8, : 8]
+    # dct_block = dct
     # caclulate mean of dct block excluding first term i.e, dct(0, 0)
     dct_average = (dct_block.mean() * dct_block.size - dct_block[0, 0]) / (dct_block.size - 1)
     # convert dct block to binary values based on dct_average
@@ -79,7 +122,8 @@ def get_image(directory, original_file):
     file_num = 0
     diffs = []
     for filename in os.listdir(directory):
-        hash = get_hash(f"{directory}/{filename}")
+        name = f"{directory}/{filename}"
+        hash = get_hash(name)
         this_hash = hash_hex_to_hash_array(hash)
         this_og_hash = hash_hex_to_hash_array(original_hash)
         minDist = min(len(this_hash), len(this_og_hash))
@@ -89,21 +133,14 @@ def get_image(directory, original_file):
             this_hash,
             this_og_hash
         )
-        other_diff = 1-cosine(
-            this_hash,
-            this_og_hash
-        )
-        other_diff_2 = euclidean(
-            this_hash,
-            this_og_hash
-        )
-        ave_diff = (this_diff + other_diff + other_diff_2*.01) / 3
+        segment_diff = split_up_hash(name, this_og_hash)
+        ave_diff = (this_diff + segment_diff) / 2
         if (ave_diff) < best_diff:
             best_diff = ave_diff
             best_image = filename
         file_num += 1
-        diffs.append((this_diff, other_diff, other_diff_2, ave_diff, filename))
-    diffs.sort()
+        diffs.append((this_diff, segment_diff, ave_diff, filename))
+    diffs.sort(key=rank_images)
     return best_diff, best_image, diffs
 
 def test_hash(directory, tresh=0.90):
