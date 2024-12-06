@@ -5,7 +5,7 @@ import scipy
 import numpy as np
 import cv2
 from apryse_sdk import PDFDoc, PDFDraw, PDFNet
-from scipy.spatial.distance import hamming, cosine, euclidean
+from scipy.spatial.distance import hamming, cosine, euclidean, jaccard
 import time
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,23 @@ def start_hash(file1, file2):
     print(f"Hamming distance: {diff}")
     print(f"Cosine distance: {diff_2}")
     print(f"Euclidean distance: {diff_3}")
+
     return diff
+
+def rv_hash(file1, file2):
+    hash1 = get_hash_rv(file1)
+    hash1_start_length = len(hash1)
+    hash2 = get_hash_rv(file2)
+    hash2_start_length = len(hash2)
+    size = min(len(hash1), len(hash2))
+    hash1 = hash1[:size]
+    hash2 = hash2[:size]
+    if hash1_start_length != len(hash1): print("Hash 1 truncated")
+    if hash2_start_length != len(hash2): print("Hash 2 truncated")
+    diff = hamming(hash1,hash2)
+    diff2 = cosine(hash1, hash2)
+    diff3 = jaccard(hash1, hash2)
+    return [diff, diff2, diff3]
 
 def hash_array_to_hash_hex(hash_array):
   # convert hash array of 0 or 1 to hash string in hex
@@ -54,9 +70,12 @@ def hash_hex_to_hash_array(hash_hex):
   return np.array([i for i in array_str], dtype = np.float32)
 
 def rank_images(diff):
-    value1, value2, value3, _ = diff
-    w1, w2, w3 = 0.4, 0.4, 0.2
-    return w1 * value1 + w2 * value2 + w3 * value3
+    scores, _ = diff
+    total_score = sum(scores)  # Total similarity score for normalization
+    weights = [score / total_score for score in scores]  # Normalize scores
+    final_score = sum(weight * score for weight, score in zip(weights, scores))
+    # final_score = sum(scores) / 6
+    return final_score
 
 def split_up_hash(name, given_hash):
     img = cv2.imread(name)
@@ -93,6 +112,21 @@ def split_up_hash(name, given_hash):
         diffs.append(diff)
     return diffs
 
+def get_hash_rv(name, is_split=False):
+    if not is_split:
+        img = cv2.imread(name)
+    else:
+        img = name
+    img = cv2.resize(img, (64, 64))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Compute the radial variance hash (using OpenCV's ximgproc module)
+    hash_value = cv2.img_hash.radialVarianceHash(img).flatten()
+    # Convert the binary hash array to a hex string
+    # hash_hex = hash_array_to_hash_hex(hash_value)
+
+    return hash_value
+
 def get_hash(name, is_split=False):
     if not is_split:
         img = cv2.imread(name)
@@ -123,27 +157,29 @@ def get_image(directory, original_file):
     diffs = []
     for filename in os.listdir(directory):
         name = f"{directory}/{filename}"
-        hash = get_hash(name)
-        this_hash = hash_hex_to_hash_array(hash)
         this_og_hash = hash_hex_to_hash_array(original_hash)
-        minDist = min(len(this_hash), len(this_og_hash))
-        this_hash = this_hash[:minDist]
-        this_og_hash = this_og_hash[:minDist]
-        this_diff = hamming(
-            this_hash,
-            this_og_hash
-        )
         segment_diff = split_up_hash(name, this_og_hash)
-        ave_diff = (this_diff + segment_diff) / 2
-        if (ave_diff) < best_diff:
-            best_diff = ave_diff
-            best_image = filename
-        file_num += 1
-        diffs.append((this_diff, segment_diff, ave_diff, filename))
+        diffs.append((segment_diff, filename))
     diffs.sort(key=rank_images)
+
     return best_diff, best_image, diffs
 
-def test_hash(directory, tresh=0.90):
+def get_image_rv(directory, original_file):
+    original_hash = get_hash_rv(original_file)
+    best_diff = 2147483647
+    best_image = ""
+    file_num = 0
+    diffs = []
+    for filename in os.listdir(directory):
+        name = f"{directory}/{filename}"
+        this_hash = get_hash_rv(name)
+        diff = euclidean(original_hash, this_hash)
+        diffs.append((diff, filename))
+    diffs.sort()
+
+    return diffs[0][0], diffs[0][1], diffs
+
+def test_hash(directory, tresh=0.90, is_rv = True):
     correct_guesses = 0
     bad_guess = []
     ave_confidence = 0
@@ -151,14 +187,15 @@ def test_hash(directory, tresh=0.90):
     ave_gap = 0
     for filename in os.listdir(directory):
         original_file = f"{directory}/{filename}"
-        this_diff, this_image, diffs = get_image(directory, original_file)
+        if is_rv: this_diff, this_image, diffs = get_image_rv(directory, original_file)
+        else: this_diff, this_image, diffs = get_image(directory, original_file)
         if this_image == filename:
             correct_guesses += 1
             good = True
         else:
             bad_guess.append((filename, this_image, this_diff))
         ave_confidence += this_diff
-        ave_gap += diffs[1] - diffs[0]
+        ave_gap += diffs[1][0] - diffs[0][0]
         print(f"\rTesting on {filename}, good result = {good}".ljust(80), end='', flush=False)
         good = False
 
@@ -199,11 +236,11 @@ if __name__ == "__main__":
                 exit(0)
             case '-h':
                 print(
-                        "Usage: [-b][-t][-s]\n"
                         "-b\tp_hash.py <-b>\n"
                         "-t\tp_hash.py <-t> <test_directory> <(opt) threshold>\n"
                         "-s\tp_hash.py <-s> <directory>\n"
                         "\tp_hash.py <-g> <filename> <directory>\n"
+                        "\tp_hash.py <-r> <filename> <filename>\n"
                         "\tp_hash.py <filename> <original_file>\n"
                 )
                 exit(0)
@@ -214,9 +251,14 @@ if __name__ == "__main__":
 
             case '-g':
                 if len(args) == 3:
-                    diff, image, diffs = get_image(args[2], args[1])
+                    diff, image, diffs = get_image_rv(args[2], args[1])
                     print(f"Best image: {image}, Difference: {diff}")
                     print(f"Top 3 differences: {diffs[:3]}")
+                exit(0)
+
+            case '-r':
+                diffs = rv_hash(args[1], args[2])
+                print("Hamming, Cosine, Jaccard", diffs)
                 exit(0)
 
 

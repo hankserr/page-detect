@@ -1,0 +1,5 @@
+57 2481.0 test_suite/page2-illustrator-crop.png
+72 2344.0 test_suite/infographics-2-crop.png
+53 1505.0 test_suite/nobackground-crop.png
+68 2104.0 test_suite/page-1-calendar-crop.png
+127 4258.0 test_suite/poster-buster-keaton-words.png
